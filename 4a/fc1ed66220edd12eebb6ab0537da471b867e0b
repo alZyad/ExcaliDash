@@ -1,0 +1,21 @@
+frontend/index.html
+  s_2e594c33f81f60::t_78edb86915b45f 8
+frontend/public/zcache.js
+  s_2e594c33f81f60::t_10a1cb6159c92d 1-400
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4afc1ed66220edd12eebb6ab0537da471b867e0b",
+  "prompts": {},
+  "sessions": {
+    "s_2e594c33f81f60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ad8b693c-dc90-49f2-985d-988073d9dbd3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "alZyad <zyad.alalgui@theodo.com>"
+    }
+  }
+}
