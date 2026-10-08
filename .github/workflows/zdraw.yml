@@ -1,0 +1,149 @@
+name: zdraw
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  push:
+    branches: [zdraw]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: zdraw
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: ZimengXiong/ExcaliDash
+  BRANCH: zdraw
+
+jobs:
+  rebase:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      status: ${{ steps.rebase.outputs.status }}
+      tag: ${{ steps.rebase.outputs.tag }}
+      base: ${{ steps.rebase.outputs.base }}
+      files: ${{ steps.rebase.outputs.files }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.ZDRAW_DEPLOY_KEY }}
+      - id: rebase
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "zdraw-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch -q upstream --tags --force
+          tag=$(gh api "repos/$UPSTREAM/releases/latest" -q .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$tag" HEAD; then
+            echo "status=current" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          oldest=$(git rev-list --reverse HEAD --not --remotes=upstream --tags | head -1)
+          base=$(git rev-parse "$oldest^")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          if git rebase --onto "$tag" "$base" HEAD; then
+            git push --force-with-lease="$BRANCH" origin "HEAD:$BRANCH"
+            echo "status=rebased" >> "$GITHUB_OUTPUT"
+          else
+            files=$(git diff --name-only --diff-filter=U | paste -sd, -)
+            git rebase --abort
+            echo "files=$files" >> "$GITHUB_OUTPUT"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci && npm run build
+        working-directory: backend
+      - run: npm ci && npm run build
+        working-directory: frontend
+
+  report:
+    needs: [rebase, build]
+    if: always() && (needs.rebase.outputs.status == 'conflict' || needs.build.result == 'failure')
+    runs-on: ubuntu-24.04
+    outputs:
+      issue: ${{ steps.issue.outputs.number }}
+      attempts: ${{ steps.issue.outputs.attempts }}
+    steps:
+      - id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STATUS: ${{ needs.rebase.outputs.status }}
+          TAG: ${{ needs.rebase.outputs.tag }}
+          FILES: ${{ needs.rebase.outputs.files }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create zdraw-bot --color B60205 --force >/dev/null
+          attempts=$(gh issue list --label zdraw-bot --state open --json number -q length)
+          echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = conflict ]; then
+            title="Rebase conflict onto $TAG"
+            body="Rebasing \`$BRANCH\` onto upstream release \`$TAG\` conflicted in: \`$FILES\`. Run: $RUN"
+          else
+            title="Build failure on $BRANCH"
+            body="\`$BRANCH\` at \`$GITHUB_SHA\` no longer builds. Run: $RUN"
+          fi
+          url=$(gh issue create --label zdraw-bot --title "$title" --body "$body")
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+
+  claude:
+    needs: [rebase, build, report]
+    if: always() && needs.report.result == 'success' && needs.report.outputs.attempts < 2
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.ZDRAW_DEPLOY_KEY }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: |
+          git config user.name "zdraw-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch -q upstream --tags --force
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          claude_args: --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+          prompt: |
+            You maintain the `${{ env.BRANCH }}` branch of this fork of ${{ env.UPSTREAM }}: upstream release tags plus a few small patch commits on top.
+            Issue #${{ needs.report.outputs.issue }} reports a problem. Rebase status: `${{ needs.rebase.outputs.status }}`, target tag: `${{ needs.rebase.outputs.tag }}`, old base: `${{ needs.rebase.outputs.base }}`, build result: `${{ needs.build.result }}`.
+
+            Goal: make `${{ env.BRANCH }}` sit on the latest upstream release with every patch commit preserved as its own atomic commit, and make it build.
+            - Conflict: run `git rebase --onto ${{ needs.rebase.outputs.tag }} ${{ needs.rebase.outputs.base }} HEAD`, resolve each conflict keeping the intent of our patch and upstream's new behaviour, `git rebase --continue` until done.
+            - Build failure: fix it inside the patch commit that caused it (fixup + autosquash), never as an extra commit, unless the fix is an adaptation to upstream changes.
+            - Verify: `npm ci && npm run build` in `backend` and in `frontend` must both succeed.
+            - Only then: `git push --force-with-lease=${{ env.BRANCH }} origin HEAD:${{ env.BRANCH }}`, comment on the issue what you changed and why, and close it with `gh issue close`.
+            - If a patch is now obsolete because upstream fixed the same problem, drop that commit and say so in the comment.
+            - If you cannot make it build, do not push; comment on the issue with what you found and leave it open.
