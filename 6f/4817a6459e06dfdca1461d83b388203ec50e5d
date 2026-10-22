@@ -1,0 +1,19 @@
+e2e/playwright.config.ts
+  s_04dd1540d0745e::t_181a476d488101 67-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6f4817a6459e06dfdca1461d83b388203ec50e5d",
+  "prompts": {},
+  "sessions": {
+    "s_04dd1540d0745e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1980958d-b907-45fc-a9fd-80953e430a9a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "alZyad <zyad.alalgui@theodo.com>"
+    }
+  }
+}
