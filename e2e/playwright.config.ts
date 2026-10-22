@@ -64,6 +64,8 @@ export default defineConfig({
   use: {
     baseURL: FRONTEND_URL,
 
+    channel: process.env.CI ? undefined : "chrome",
+
     trace: "retain-on-failure",
 
     screenshot: "only-on-failure",
